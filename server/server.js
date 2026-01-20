@@ -11,32 +11,30 @@ const state = new DrawingState();
 app.use(express.static('client'));
 
 io.on('connection', (socket) => {
-    console.log('A user connected:', socket.id);
-    
-    // 1. Send existing history to the new user
     socket.emit('init', state.get());
+    io.emit('user-joined', { id: socket.id, name: `User ${socket.id.substring(0, 4)}` });
+    io.emit('user-count', io.engine.clientsCount);
 
-    // 2. Handle drawing (FIXED: added socket.id)
     socket.on('draw', (data) => {
-        state.add(data, socket.id); 
+        state.add(data, socket.id);
         socket.broadcast.emit('draw', data);
     });
 
-    // 3. Handle cursors
     socket.on('mouse-move', (data) => {
         socket.broadcast.emit('mouse-move', { id: socket.id, ...data });
     });
 
-    // 4. Handle Undo
     socket.on('undo', () => {
-        const success = state.undo(socket.id);
-        console.log('Undo requested by:', socket.id, 'Success:', success);
+        if (state.undo(socket.id)) io.emit('init', state.get());
+    });
+
+    socket.on('redo', () => {
+        const success = state.redo(socket.id);
         if (success) {
             io.emit('init', state.get()); 
         }
     });
 
-    // 5. Handle Clear
     socket.on('clear', () => {
         state.clear();
         io.emit('clear');
@@ -44,7 +42,8 @@ io.on('connection', (socket) => {
 
     socket.on('disconnect', () => {
         io.emit('user-left', socket.id);
+        io.emit('user-count', io.engine.clientsCount);
     });
 });
 
-server.listen(process.env.PORT||3000, () => console.log(`Server running on http://localhost:${process.env.PORT}`));
+server.listen(3000, () => console.log('Server running on http://localhost:3000'));

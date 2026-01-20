@@ -1,97 +1,134 @@
 import { CanvasManager } from './canvas.js';
-
 const socket = io();
 const canvas = document.getElementById('canvas');
 const manager = new CanvasManager(canvas);
-const cursors = {};
-
 let currentStrokeId = null;
 
-// --- TOOL SELECTION ---
-const brushBtn = document.getElementById('brushBtn');
-const eraserBtn = document.getElementById('eraserBtn');
-const colorPicker = document.getElementById('colorPicker');
-const brushSize = document.getElementById('brushSize');
-
-brushBtn.onclick = () => {
-    manager.isEraser = false;
-    brushBtn.classList.add('active');
-    eraserBtn.classList.remove('active');
-};
-
-eraserBtn.onclick = () => {
-    manager.isEraser = true;
-    eraserBtn.classList.add('active');
-    brushBtn.classList.remove('active');
-};
-
-colorPicker.onchange = (e) => manager.color = e.target.value;
-brushSize.oninput = (e) => manager.lineWidth = e.target.value;
-
-// --- MOUSE EVENTS ---
 canvas.addEventListener('mousedown', e => {
-    // Unique ID for the entire continuous stroke
     currentStrokeId = `${socket.id}-${Date.now()}`;
     manager.startDrawing(e.offsetX, e.offsetY);
 });
 
 canvas.addEventListener('mousemove', e => {
     const line = manager.draw(e.offsetX, e.offsetY);
-    
-    if (line && currentStrokeId) {
-        // Emit drawing data with strokeId for grouped undo
-        socket.emit('draw', { ...line, strokeId: currentStrokeId });
-    }
-    
-    // Emit cursor position
+    if (line && currentStrokeId) socket.emit('draw', { ...line, strokeId: currentStrokeId });
     socket.emit('mouse-move', { x: e.offsetX, y: e.offsetY });
 });
 
-window.addEventListener('mouseup', () => {
-    manager.stopDrawing();
-    currentStrokeId = null;
-});
+window.addEventListener('mouseup', () => { manager.isDrawing = false; currentStrokeId = null; });
 
-// Toolbar Actions
-document.getElementById('clearBtn').onclick = () => socket.emit('clear');
+// UI Handlers
+document.getElementById('brushBtn').onclick = () => { manager.isEraser = false; toggleActive('brushBtn'); };
+document.getElementById('eraserBtn').onclick = () => { manager.isEraser = true; toggleActive('eraserBtn'); };
+document.getElementById('colorPicker').onchange = e => manager.color = e.target.value;
+document.getElementById('brushSize').oninput = e => manager.lineWidth = e.target.value;
 document.getElementById('undoBtn').onclick = () => socket.emit('undo');
+document.getElementById('redoBtn').onclick = () => socket.emit('redo');
+document.getElementById('clearBtn').onclick = () => socket.emit('clear');
 
-// --- SOCKET EVENTS ---
+function toggleActive(id) {
+    ['brushBtn', 'eraserBtn'].forEach(btn => document.getElementById(btn).classList.remove('active'));
+    document.getElementById(id).classList.add('active');
+}
 
-// Initial load or full refresh (after Undo)
-socket.on('init', (history) => {
-    manager.redrawHistory(history);
+const usersPanel = document.getElementById('usersPanel');
+const usersList = document.getElementById('usersList');
+const usersBtn = document.getElementById('usersBtn');
+const closeUsersBtn = document.getElementById('closeUsersBtn');
+
+usersBtn.onclick = () => usersPanel.classList.toggle('hidden');
+closeUsersBtn.onclick = () => usersPanel.classList.add('hidden');
+
+const connectedUsers = {};
+
+socket.on('user-joined', (data) => {
+    connectedUsers[data.id] = data.name || `User ${data.id.substring(0, 4)}`;
+    updateUsersList();
 });
 
-// Real-time draw from other users
-socket.on('draw', (data) => {
-    manager.renderLine(data);
+socket.on('user-left', (id) => {
+    delete connectedUsers[id];
+    updateUsersList();
 });
 
-socket.on('clear', () => {
-    manager.clear();
-});
+function updateUsersList() {
+    usersList.innerHTML = '';
+    Object.entries(connectedUsers).forEach(([id, name]) => {
+        const li = document.createElement('li');
+        const dot = document.createElement('div');
+        dot.className = 'user-dot';
+        const hue = Math.abs(id.split('').reduce((a, b) => a + b.charCodeAt(0), 0)) % 360;
+        dot.style.backgroundColor = `hsl(${hue}, 70%, 50%)`;
+        
+        const text = document.createElement('span');
+        text.textContent = name;
+        
+        li.appendChild(dot);
+        li.appendChild(text);
+        usersList.appendChild(li);
+    });
+}
 
-// Cursor Tracking
+socket.on('init', history => manager.redrawHistory(history));
+socket.on('draw', data => manager.renderLine(data));
+socket.on('clear', () => manager.clear());
+
+const cursors = {};
+let lastMoveEmit = 0;
+
 socket.on('mouse-move', (data) => {
+    // 1. Create cursor if it doesn't exist
     if (!cursors[data.id]) {
-        const el = document.createElement('div');
-        el.className = 'cursor';
-        // Random color for each user's cursor
-        el.style.background = `hsl(${parseInt(data.id, 36) % 360}, 70%, 50%)`;
-        document.body.appendChild(el);
-        cursors[data.id] = el;
+        console.log("Creating new cursor for user:", data.id);
+        
+        const dot = document.createElement('div');
+        dot.className = 'cursor';
+        
+        // Color logic
+        const hue = Math.abs(data.id.split('').reduce((a, b) => a + b.charCodeAt(0), 0)) % 360;
+        const color = `hsl(${hue}, 70%, 50%)`;
+        dot.style.backgroundColor = color;
+
+        // 2. Create the Name Tag
+        const nameTag = document.createElement('div');
+        nameTag.className = 'cursor-name';
+        nameTag.style.backgroundColor = color;
+        nameTag.style.color = 'black'; // Ensure text is visible
+        nameTag.innerText = `User ${data.id.substring(0, 4)}`;
+        
+        // 3. ATTACHMENT (Crucial Step)
+        dot.appendChild(nameTag); // Put name inside the dot
+        document.body.appendChild(dot); // Put dot on the page
+        
+        cursors[data.id] = dot;
     }
-    
-    // Adjust position based on canvas offset
+
+    // 4. Update position
     const rect = canvas.getBoundingClientRect();
-    cursors[data.id].style.left = `${data.x + rect.left}px`;
-    cursors[data.id].style.top = `${data.y + rect.top}px`;
+    const x = data.x + rect.left;
+    const y = data.y + rect.top;
+
+    cursors[data.id].style.left = `${x}px`;
+    cursors[data.id].style.top = `${y}px`;
 });
 
+// Remove cursor when user leaves
 socket.on('user-left', (id) => {
     if (cursors[id]) {
         cursors[id].remove();
         delete cursors[id];
+    }
+});
+
+canvas.addEventListener('mousemove', e => {
+    const line = manager.draw(e.offsetX, e.offsetY);
+    if (line && currentStrokeId) {
+        socket.emit('draw', { ...line, strokeId: currentStrokeId });
+    }
+
+    // Throttle: Only send cursor position every 30ms (prevents lag)
+    if (Date.now() - lastMoveEmit > 30) {
+        socket.emit('mouse-move', { x: e.offsetX, y: e.offsetY });
+        lastMoveEmit = Date.now();
     }
 });
